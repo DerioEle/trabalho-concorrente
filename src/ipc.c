@@ -3,10 +3,8 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <string.h>
 #include <unistd.h>
 
-// Inicializa fila de mensagens POSIX
 mqd_t init_message_queue() {
     struct mq_attr attr;
     attr.mq_flags = 0;
@@ -23,7 +21,6 @@ mqd_t init_message_queue() {
     return queue;
 }
 
-// Envia pedido na fila
 void send_pedido(const Pedido *p) {
     mqd_t queue = mq_open(MQ_NAME, O_WRONLY);
     if (queue == -1) {
@@ -39,7 +36,6 @@ void send_pedido(const Pedido *p) {
     mq_close(queue);
 }
 
-// Recebe pedido da fila
 void receive_pedido(Pedido *p) {
     mqd_t queue = mq_open(MQ_NAME, O_RDONLY);
     if (queue == -1) {
@@ -55,7 +51,6 @@ void receive_pedido(Pedido *p) {
     mq_close(queue);
 }
 
-// Cria/abre memória compartilhada e define tamanho
 int init_shared_memory(int size) {
     int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     if (shm_fd == -1) {
@@ -71,9 +66,8 @@ int init_shared_memory(int size) {
     return shm_fd;
 }
 
-// Faz mmap da memória compartilhada
 void* map_shared_memory(int shm_fd, int size) {
-    void *ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (ptr == MAP_FAILED) {
         perror("mmap");
         exit(1);

@@ -3,32 +3,61 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <semaphore.h>
+#include <signal.h>
+#include <fcntl.h>
 #include "ipc.h"
+#include <sys/mman.h>
 
 #define NUM_COZINHEIROS 3
 #define MAX_BUFFER 10
 
-// Buffer circular de pedidos
+// Buffer circular
 Pedido fila[MAX_BUFFER];
 int in = 0;
 int out = 0;
 int count = 0;
 
-// Sincronização por mutex + cond
+// Sincronização
 pthread_mutex_t mutex_fila;
 pthread_cond_t cond_fila;
 
-// Semáforos POSIX (Etapa 2)
-sem_t sem_itens;            // quantos pedidos existem
-sem_t sem_espacos;          // quantos espaços sobrando
+// Semáforos POSIX
+sem_t sem_itens;
+sem_t sem_espacos;
 
-// Painel em memória compartilhada (Etapa 3)
+// Painel em memória compartilhada
 PainelStatus *painel;
-pthread_mutex_t mutex_painel; // proteção do painel
+pthread_mutex_t mutex_painel;
+
+mqd_t mq_descriptor;
+int shm_descriptor;
 
 /* --------------------------------------------------------------------------
-   Funções para manipular painel
+    FUNÇÃO DE LIMPEZA (cleanup)
 ----------------------------------------------------------------------------*/
+void cleanup(int signum) {
+    printf("\n[SERVIDOR] Encerrando... (signal %d)\n", signum);
+
+    // Fecha fila de mensagens
+    mq_close(mq_descriptor);
+    mq_unlink(MQ_NAME);
+
+    // Fecha memória compartilhada
+    munmap(painel, sizeof(PainelStatus));
+    shm_unlink(SHM_NAME);
+
+    // Destrói mutexes, condvars e semáforos
+    pthread_mutex_destroy(&mutex_fila);
+    pthread_mutex_destroy(&mutex_painel);
+    pthread_cond_destroy(&cond_fila);
+    sem_destroy(&sem_itens);
+    sem_destroy(&sem_espacos);
+
+    printf("[SERVIDOR] Recursos liberados com sucesso.\n");
+    exit(0);
+}
+
+/* -------------------------------------------------------------------------- */
 void painel_incrementa_total() {
     pthread_mutex_lock(&mutex_painel);
     painel->total_pedidos++;
@@ -48,12 +77,8 @@ void painel_finaliza_pedido() {
     pthread_mutex_unlock(&mutex_painel);
 }
 
-/* --------------------------------------------------------------------------
-   Produtor — servidor insere pedidos
-----------------------------------------------------------------------------*/
+/* -------------------------------------------------------------------------- */
 void colocar_na_fila(Pedido p) {
-
-    // Espera ter espaço (semáforo)
     sem_wait(&sem_espacos);
 
     pthread_mutex_lock(&mutex_fila);
@@ -62,24 +87,16 @@ void colocar_na_fila(Pedido p) {
     in = (in + 1) % MAX_BUFFER;
     count++;
 
-    // Acorda consumidores
     pthread_cond_signal(&cond_fila);
 
     pthread_mutex_unlock(&mutex_fila);
 
-    // Atualiza painel: aumentou total de pedidos
     painel_incrementa_total();
-
-    // Indica que há mais um item disponível
     sem_post(&sem_itens);
 }
 
-/* --------------------------------------------------------------------------
-   Consumidor — threads cozinheiras retiram pedidos
-----------------------------------------------------------------------------*/
+/* -------------------------------------------------------------------------- */
 Pedido retirar_da_fila() {
-
-    // Espera até existir item para retirar (semáforo)
     sem_wait(&sem_itens);
 
     pthread_mutex_lock(&mutex_fila);
@@ -88,97 +105,67 @@ Pedido retirar_da_fila() {
     out = (out + 1) % MAX_BUFFER;
     count--;
 
-    // Acorda produtores (caso antes estivesse cheio)
     pthread_cond_signal(&cond_fila);
 
     pthread_mutex_unlock(&mutex_fila);
 
-    // Indica que há mais um espaço disponível
     sem_post(&sem_espacos);
-
     return p;
 }
 
-/* --------------------------------------------------------------------------
-   Thread cozinheira
-----------------------------------------------------------------------------*/
+/* -------------------------------------------------------------------------- */
 void* cozinheiro_thread(void* arg) {
     int id = (long)arg;
 
     while (1) {
         Pedido p = retirar_da_fila();
 
-        // Atualiza painel: começou preparo
         painel_comeca_preparo();
-
         printf("[COZINHEIRO %d] Preparando: %s (%d s)\n",
                id, p.descricao, p.tempo_preparo);
 
         sleep(p.tempo_preparo);
 
-        printf("[COZINHEIRO %d] Finalizou: %s\n",
-               id, p.descricao);
-
-        // Atualiza painel: finalizou pedido
+        printf("[COZINHEIRO %d] Finalizou: %s\n", id, p.descricao);
         painel_finaliza_pedido();
     }
-
     return NULL;
 }
 
-/* --------------------------------------------------------------------------
-   Função principal do servidor
-----------------------------------------------------------------------------*/
+/* -------------------------------------------------------------------------- */
 int main() {
-    printf("[SERVIDOR] Inicializando servidor...\n");
+    printf("[SERVIDOR] Iniciando...\n");
 
-    // Inicializa fila de mensagens POSIX
-    mqd_t mq = init_message_queue();
-    (void)mq;
+    signal(SIGINT, cleanup);
 
-    // Inicializa mutex e variável de condição
     pthread_mutex_init(&mutex_fila, NULL);
+    pthread_mutex_init(&mutex_painel, NULL);
     pthread_cond_init(&cond_fila, NULL);
 
-    // Inicializa semáforos (Etapa 2)
-    sem_init(&sem_itens, 0, 0);               // nenhum item no início
-    sem_init(&sem_espacos, 0, MAX_BUFFER);    // buffer completamente vazio
+    sem_init(&sem_itens, 0, 0);
+    sem_init(&sem_espacos, 0, MAX_BUFFER);
 
-    // Inicializa mutex do painel
-    pthread_mutex_init(&mutex_painel, NULL);
+    mq_descriptor = init_message_queue();
+    shm_descriptor = init_shared_memory(sizeof(PainelStatus));
+    painel = (PainelStatus*) map_shared_memory(shm_descriptor, sizeof(PainelStatus));
 
-    // Inicializa memória compartilhada para PainelStatus (Etapa 3)
-    int shm_fd = init_shared_memory(sizeof(PainelStatus));
-    painel = (PainelStatus*) map_shared_memory(shm_fd, sizeof(PainelStatus));
-
-    // Zera painel
     painel->total_pedidos = 0;
     painel->em_preparo = 0;
     painel->finalizados = 0;
 
-    // Cria threads cozinheiras
     pthread_t threads[NUM_COZINHEIROS];
     for (int i = 0; i < NUM_COZINHEIROS; i++) {
         pthread_create(&threads[i], NULL, cozinheiro_thread, (void*)(long)i);
     }
 
-    // Loop principal de recebimento de pedidos
     while (1) {
         Pedido p;
         receive_pedido(&p);
 
-        printf("[SERVIDOR] Recebido do cliente %d: %s\n",
+        printf("[SERVIDOR] Pedido recebido do cliente %d: %s\n",
                p.id_cliente, p.descricao);
 
         colocar_na_fila(p);
-
-        // (Opcional) debug rápido do painel
-        pthread_mutex_lock(&mutex_painel);
-        printf("[PAINEL] Total: %d | Em preparo: %d | Finalizados: %d\n",
-               painel->total_pedidos,
-               painel->em_preparo,
-               painel->finalizados);
-        pthread_mutex_unlock(&mutex_painel);
     }
 
     return 0;
