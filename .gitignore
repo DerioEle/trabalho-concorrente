@@ -1,0 +1,30 @@
+# Compilação
+*.o
+*.out
+*.a
+*.so
+*.exe
+
+# Binários gerados
+servidor
+cliente
+painel
+
+# Diretórios de build
+/build/
+bin/
+obj/
+
+# Arquivos temporários
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# VSCode
+.vscode/
+
+# WSL
+*.dSYM/

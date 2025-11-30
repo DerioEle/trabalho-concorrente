@@ -1,0 +1,40 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include "ipc.h"
+
+#define NUM_COZINHEIROS 3
+
+pthread_mutex_t mutex_fila;
+pthread_cond_t cond_fila;
+
+void* cozinheiro_thread(void* arg) {
+    int id = (long)arg;
+
+    while (1) {
+        pthread_mutex_lock(&mutex_fila);
+        printf("[COZINHEIRO %d] Aguardando pedidos...\n", id);
+
+        // Ainda será preenchido: condição + processamento
+        pthread_mutex_unlock(&mutex_fila);
+
+        sleep(1);
+    }
+    return NULL;
+}
+
+int main() {
+    printf("[SERVIDOR] Inicializando servidor...\n");
+
+    // Inicializa fila de mensagens
+    mqd_t mq = init_message_queue();
+    (void)mq; // evitar warning por enquanto
+
+    // Inicializa sincronização
+    pthread_mutex_init(&mutex_fila, NULL);
+    pthread_cond_init(&cond_fila, NULL);
+
+    // Cria threads
+    pthread_t threads[NUM_COZINHEIROS];
+   
